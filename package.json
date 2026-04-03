@@ -12,16 +12,16 @@
     "type-check": "tsc --noEmit"
   },
   "devDependencies": {
-    "@crxjs/vite-plugin": "^2.2.0",
+    "@crxjs/vite-plugin": "^2.4.0",
     "@typescript-eslint/eslint-plugin": "^7.18.0",
     "@typescript-eslint/parser": "^7.18.0",
-    "chrome-types": "^0.1.375",
+    "chrome-types": "^0.1.425",
     "eslint": "^8.57.0",
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-import": "^2.32.0",
-    "eslint-plugin-prettier": "^5.1.3",
-    "prettier": "^3.3.3",
-    "typescript": "^5.9.2",
-    "vite": "^7.1.4"
+    "eslint-plugin-prettier": "^5.5.5",
+    "prettier": "^3.8.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1"
   }
 }
