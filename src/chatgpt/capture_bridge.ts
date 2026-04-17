@@ -53,8 +53,12 @@ type AnyCapturePayload = ThreadSnapshotPayload | EventPayload;
 const CHATGPT_PROVIDER: 'chatgpt' = 'chatgpt';
 const THREAD_CAPTURE_ENDPOINT = '/v1/capture/thread-snapshot';
 const EVENT_CAPTURE_ENDPOINT = '/v1/capture/event';
+const CONTEXT_SUGGEST_ENDPOINT = '/v1/context/suggest';
+const CONTEXT_CONFIRM_ENDPOINT = '/v1/context/confirm';
 const LOCAL_DAEMON_URLS = ['http://127.0.0.1:8787', 'http://localhost:8787'];
 const DEFAULT_BRANCH_ID = 'main';
+const CONTEXT_BUTTON_ID = 'codex-context-button';
+const CONTEXT_MODAL_ID = 'codex-context-modal';
 
 let lastSnapshotFingerprint = '';
 let lastConversationId = '';
@@ -62,7 +66,29 @@ const recentUserMessageFingerprints = new Map<string, number>();
 const capturedAssistantMessages = new Set<string>();
 const captureObserver = new MutationObserver(() => {
   void detectLatestAssistantMessage();
+  ensureContextButton();
 });
+
+type DaemonContextSuggestion = {
+  id: string;
+  conversation_id: string;
+  message_id: string;
+  role: string;
+  text: string;
+  captured_at: string;
+  score: number;
+  metadata?: Record<string, unknown>;
+};
+
+type DaemonContextSuggestResponse = {
+  provider: string;
+  conversation_id?: string | null;
+  suggestions: DaemonContextSuggestion[];
+};
+
+let contextModalOpen = false;
+let contextModalLoading = false;
+let contextSuggestions: DaemonContextSuggestion[] = [];
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -233,6 +259,28 @@ async function postCapture(endpoint: string, payload: AnyCapturePayload): Promis
   return false;
 }
 
+async function postDaemon<T>(endpoint: string, payload: Record<string, unknown>): Promise<T | null> {
+  const body = JSON.stringify(payload);
+  for (const base of LOCAL_DAEMON_URLS) {
+    try {
+      const response = await fetch(`${base}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body,
+      });
+      if (!response.ok) {
+        continue;
+      }
+      return await response.json();
+    } catch {
+      // daemon not available at this base URL
+    }
+  }
+  return null;
+}
+
 async function sendThreadSnapshot(): Promise<void> {
   if (!isConversationSurface()) {
     return;
@@ -279,6 +327,345 @@ function getComposerText(): string {
     }
   }
   return '';
+}
+
+function getComposerElement():
+  | HTMLTextAreaElement
+  | HTMLInputElement
+  | HTMLDivElement
+  | null {
+  const candidates = [
+    'textarea[data-testid="prompt-textarea"]',
+    '[data-testid="composer-tray"] textarea',
+    'form textarea',
+    'textarea[placeholder]',
+    'div[contenteditable="true"]',
+  ];
+  for (const selector of candidates) {
+    const element = document.querySelector(selector);
+    if (!element) {
+      continue;
+    }
+    if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+      return element;
+    }
+    if (element instanceof HTMLDivElement && element.getAttribute('contenteditable') === 'true') {
+      return element;
+    }
+  }
+  return null;
+}
+
+function setComposerText(nextValue: string): void {
+  const element = getComposerElement();
+  if (!element) {
+    return;
+  }
+  if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+    element.focus();
+    element.value = nextValue;
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    return;
+  }
+  element.focus();
+  element.textContent = nextValue;
+  element.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function composeContextBlock(selected: DaemonContextSuggestion[]): string {
+  const lines = selected.map((item, index) => `${index + 1}. [${item.role}] ${item.text}`);
+  return `Relevant context:\n${lines.join('\n')}\n\n`;
+}
+
+function closeContextModal(): void {
+  const modal = document.getElementById(CONTEXT_MODAL_ID);
+  if (modal) {
+    modal.remove();
+  }
+  contextModalOpen = false;
+  contextModalLoading = false;
+  contextSuggestions = [];
+}
+
+async function fetchContextSuggestions(query: string): Promise<DaemonContextSuggestion[]> {
+  const response = await postDaemon<DaemonContextSuggestResponse>(CONTEXT_SUGGEST_ENDPOINT, {
+    provider: CHATGPT_PROVIDER,
+    conversation_id: getConversationId(),
+    query,
+    top_k: 6,
+    threshold: 0,
+  });
+  if (!response || !Array.isArray(response.suggestions)) {
+    return [];
+  }
+  return response.suggestions;
+}
+
+async function confirmContextSelection(
+  selected: DaemonContextSuggestion[],
+  approvedText: string,
+  draftedPrompt: string
+): Promise<void> {
+  await postDaemon(CONTEXT_CONFIRM_ENDPOINT, {
+    provider: CHATGPT_PROVIDER,
+    conversation_id: getConversationId(),
+    selected_suggestion_ids: selected.map(item => item.id),
+    approved_text: approvedText,
+    drafted_prompt: draftedPrompt,
+  });
+}
+
+function truncateText(text: string, max = 220): string {
+  if (text.length <= max) {
+    return text;
+  }
+  return `${text.slice(0, max - 3)}...`;
+}
+
+function renderContextModalBody(
+  container: HTMLElement,
+  suggestions: DaemonContextSuggestion[],
+  originalPrompt: string
+): void {
+  container.innerHTML = '';
+
+  const title = document.createElement('div');
+  title.textContent = 'Suggested Context';
+  title.style.cssText = `
+    font-size: 14px;
+    font-weight: 600;
+    color: #ffffff;
+    margin-bottom: 10px;
+  `;
+  container.appendChild(title);
+
+  if (suggestions.length === 0) {
+    const empty = document.createElement('div');
+    empty.textContent = 'No context suggestions yet.';
+    empty.style.cssText = `
+      font-size: 13px;
+      color: #a1a1aa;
+      margin-bottom: 12px;
+    `;
+    container.appendChild(empty);
+  } else {
+    const list = document.createElement('div');
+    list.style.cssText = `
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 240px;
+      overflow-y: auto;
+      margin-bottom: 12px;
+    `;
+
+    suggestions.forEach((suggestion, index) => {
+      const row = document.createElement('label');
+      row.style.cssText = `
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        background: #1f2937;
+        border: 1px solid #374151;
+        border-radius: 8px;
+        padding: 8px;
+        cursor: pointer;
+      `;
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = index < 2;
+      checkbox.dataset['suggestionId'] = suggestion.id;
+      checkbox.style.marginTop = '2px';
+
+      const textWrap = document.createElement('div');
+      textWrap.style.cssText = `
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      `;
+
+      const meta = document.createElement('div');
+      meta.textContent = `${suggestion.role} • score ${suggestion.score.toFixed(3)}`;
+      meta.style.cssText = `
+        font-size: 11px;
+        color: #9ca3af;
+      `;
+
+      const text = document.createElement('div');
+      text.textContent = truncateText(suggestion.text);
+      text.style.cssText = `
+        font-size: 12px;
+        color: #e5e7eb;
+      `;
+
+      textWrap.appendChild(meta);
+      textWrap.appendChild(text);
+      row.appendChild(checkbox);
+      row.appendChild(textWrap);
+      list.appendChild(row);
+    });
+
+    container.appendChild(list);
+  }
+
+  const actions = document.createElement('div');
+  actions.style.cssText = `
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  `;
+
+  const cancelButton = document.createElement('button');
+  cancelButton.textContent = 'Cancel';
+  cancelButton.style.cssText = `
+    padding: 6px 10px;
+    border: 1px solid #4b5563;
+    background: #111827;
+    color: #e5e7eb;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+  `;
+  cancelButton.addEventListener('click', () => closeContextModal());
+
+  const applyButton = document.createElement('button');
+  applyButton.textContent = 'Apply to Prompt';
+  applyButton.style.cssText = `
+    padding: 6px 10px;
+    border: none;
+    background: #2563eb;
+    color: #ffffff;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+  `;
+  applyButton.addEventListener('click', async () => {
+    const selectedCheckboxes = Array.from(
+      container.querySelectorAll<HTMLInputElement>('input[type="checkbox"][data-suggestion-id]:checked')
+    );
+    const selectedIds = new Set(selectedCheckboxes.map(item => item.dataset['suggestionId'] || ''));
+    const selected = suggestions.filter(item => selectedIds.has(item.id));
+    if (selected.length === 0) {
+      closeContextModal();
+      return;
+    }
+    const contextBlock = composeContextBlock(selected);
+    setComposerText(`${contextBlock}${originalPrompt}`);
+    await confirmContextSelection(selected, contextBlock, originalPrompt);
+    closeContextModal();
+  });
+
+  actions.appendChild(cancelButton);
+  actions.appendChild(applyButton);
+  container.appendChild(actions);
+}
+
+async function openContextModal(): Promise<void> {
+  if (contextModalOpen || contextModalLoading) {
+    return;
+  }
+
+  const prompt = normalizeText(getComposerText());
+  if (prompt.length < 3) {
+    return;
+  }
+
+  contextModalLoading = true;
+  contextModalOpen = true;
+
+  const overlay = document.createElement('div');
+  overlay.id = CONTEXT_MODAL_ID;
+  overlay.style.cssText = `
+    position: fixed;
+    inset: 0;
+    z-index: 2147483645;
+    background: rgba(0, 0, 0, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  `;
+
+  const shell = document.createElement('div');
+  shell.style.cssText = `
+    width: min(560px, calc(100vw - 24px));
+    background: #111827;
+    border: 1px solid #374151;
+    border-radius: 10px;
+    padding: 14px;
+    box-shadow: 0 18px 42px rgba(0, 0, 0, 0.45);
+  `;
+  overlay.appendChild(shell);
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener('click', event => {
+    if (event.target === overlay) {
+      closeContextModal();
+    }
+  });
+
+  const loading = document.createElement('div');
+  loading.textContent = 'Loading context suggestions...';
+  loading.style.cssText = `
+    font-size: 13px;
+    color: #d1d5db;
+  `;
+  shell.appendChild(loading);
+
+  try {
+    contextSuggestions = await fetchContextSuggestions(prompt);
+    contextModalLoading = false;
+    renderContextModalBody(shell, contextSuggestions, prompt);
+  } catch {
+    contextModalLoading = false;
+    shell.innerHTML = '';
+    const failure = document.createElement('div');
+    failure.textContent = 'Unable to load suggestions from local daemon.';
+    failure.style.cssText = `
+      font-size: 13px;
+      color: #fca5a5;
+    `;
+    shell.appendChild(failure);
+  }
+}
+
+function ensureContextButton(): void {
+  if (!isConversationSurface()) {
+    return;
+  }
+  if (document.getElementById(CONTEXT_BUTTON_ID)) {
+    return;
+  }
+  const form = document.querySelector('form');
+  if (!form) {
+    return;
+  }
+
+  const button = document.createElement('button');
+  button.id = CONTEXT_BUTTON_ID;
+  button.type = 'button';
+  button.textContent = 'Context';
+  button.style.cssText = `
+    position: absolute;
+    right: 12px;
+    bottom: 10px;
+    z-index: 9999;
+    border: 1px solid #4b5563;
+    background: #111827;
+    color: #e5e7eb;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 11px;
+    cursor: pointer;
+  `;
+  button.addEventListener('click', () => {
+    void openContextModal();
+  });
+
+  if (getComputedStyle(form).position === 'static') {
+    form.style.position = 'relative';
+  }
+  form.appendChild(button);
 }
 
 function buildEventPayloadFromText(text: string, eventType: 'message_created' | 'message_completed'): EventPayload {
@@ -375,6 +762,11 @@ function attachSendCaptureListeners(): void {
         void emitMessageCreated();
         return;
       }
+      if (event.key.toLowerCase() === 'm' && event.ctrlKey && event.shiftKey) {
+        event.preventDefault();
+        void openContextModal();
+        return;
+      }
 
       if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
         const active = document.activeElement;
@@ -432,6 +824,7 @@ function bootstrapCaptureBridge(): void {
   }
 
   void sendThreadSnapshot();
+  ensureContextButton();
   attachSendCaptureListeners();
   installNavigationWatchers();
   initObserver();
