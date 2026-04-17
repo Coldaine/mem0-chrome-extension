@@ -4,10 +4,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
+import json
+import os
 from typing import Any, Literal, Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+import asyncpg
 
 
 CaptureEventType = Literal[
@@ -237,6 +240,120 @@ class InMemoryArchive:
 
 app = FastAPI(title="browser-capture-daemon", version="0.1.0")
 archive = InMemoryArchive()
+pg_pool: Optional[asyncpg.Pool] = None
+
+
+async def upsert_conversation_row(
+  payload: ThreadSnapshotPayload | EventPayload,
+) -> Optional[int]:
+  global pg_pool
+  if pg_pool is None:
+    return None
+  metadata = json.dumps(payload.raw_provider_metadata or {})
+  row = await pg_pool.fetchrow(
+    """
+    INSERT INTO browser_capture.conversations (
+      provider,
+      conversation_id,
+      account_id,
+      branch_id,
+      source_url,
+      source_metadata,
+      first_seen_at,
+      last_seen_at
+    )
+    VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::timestamptz, $7::timestamptz)
+    ON CONFLICT (provider, conversation_id, branch_id)
+    DO UPDATE SET
+      account_id = EXCLUDED.account_id,
+      source_url = EXCLUDED.source_url,
+      source_metadata = EXCLUDED.source_metadata,
+      last_seen_at = EXCLUDED.last_seen_at,
+      updated_at = NOW()
+    RETURNING id
+    """,
+    payload.provider,
+    payload.conversation_id,
+    payload.account_id,
+    payload.branch_id,
+    payload.source_url,
+    metadata,
+    payload.captured_at,
+  )
+  if row is None:
+    return None
+  return int(row["id"])
+
+
+async def persist_capture_event(
+  payload: ThreadSnapshotPayload | EventPayload,
+  event_type: str,
+  ingest_id: str,
+) -> None:
+  global pg_pool
+  if pg_pool is None:
+    return
+  conversation_row_id = await upsert_conversation_row(payload)
+  if conversation_row_id is None:
+    return
+
+  provider_message_id: Optional[str] = None
+  revision_id: Optional[str] = None
+  parent_message_id: Optional[str] = None
+  if isinstance(payload, EventPayload):
+    provider_message_id = payload.message_id
+    revision_id = payload.revision_id
+    parent_message_id = payload.parent_message_id
+
+  payload_json = payload.model_dump_json()
+  payload_hash = sha256(payload_json.encode("utf-8")).hexdigest()
+  await pg_pool.execute(
+    """
+    INSERT INTO browser_capture.capture_events (
+      provider,
+      event_type,
+      conversation_id,
+      provider_message_id,
+      revision_id,
+      parent_message_id,
+      payload,
+      payload_hash,
+      dedupe_signature
+    )
+    VALUES (
+      $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9
+    )
+    ON CONFLICT (provider, event_type, payload_hash, dedupe_signature) DO NOTHING
+    """,
+    payload.provider,
+    event_type,
+    conversation_row_id,
+    provider_message_id,
+    revision_id,
+    parent_message_id,
+    payload_json,
+    payload_hash,
+    ingest_id,
+  )
+
+
+@app.on_event("startup")
+async def daemon_startup() -> None:
+  global pg_pool
+  database_url = os.getenv("ARCHIVE_DATABASE_URL", "").strip()
+  if not database_url:
+    pg_pool = None
+    return
+  pg_pool = await asyncpg.create_pool(dsn=database_url, min_size=1, max_size=4)
+
+
+@app.on_event("shutdown")
+async def daemon_shutdown() -> None:
+  global pg_pool
+  if pg_pool is None:
+    return
+  await pg_pool.close()
+  pg_pool = None
 
 
 def _result(ingest_id: str, deduped: bool, conversation_id: str, event_type: str) -> CaptureResult:
@@ -254,6 +371,11 @@ async def create_snapshot(payload: ThreadSnapshotPayload) -> CaptureResult:
   if not payload.conversation_id:
     raise HTTPException(status_code=400, detail="conversation_id is required")
   ingest_id, deduped = archive.upsert_snapshot(payload)
+  try:
+    await persist_capture_event(payload, payload.event_type, ingest_id)
+  except Exception:
+    # Keep capture flow available even if persistence backend is temporarily unavailable.
+    pass
   return _result(
     ingest_id=ingest_id,
     deduped=deduped,
@@ -277,6 +399,11 @@ async def create_event(payload: EventPayload) -> CaptureResult:
   if not payload.message_id:
     raise HTTPException(status_code=400, detail="message_id is required")
   ingest_id, deduped = archive.append_event(payload)
+  try:
+    await persist_capture_event(payload, payload.event_type, ingest_id)
+  except Exception:
+    # Keep capture flow available even if persistence backend is temporarily unavailable.
+    pass
   return _result(
     ingest_id=ingest_id,
     deduped=deduped,
