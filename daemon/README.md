@@ -10,6 +10,8 @@ pip install -e .
 uvicorn app.main:app --host 0.0.0.0 --port 8787
 ```
 
+Set `ARCHIVE_DATABASE_URL` to enable Postgres persistence into `browser_capture.*`.
+
 ## Endpoints
 
 - `POST /v1/capture/thread-snapshot`
@@ -30,6 +32,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8787
 - Current implementation uses an in-memory store.
 - It enforces idempotency by hashing payloads.
 - This is intentionally minimal for the first ChatGPT proof-of-concept.
+- When `ARCHIVE_DATABASE_URL` is present, capture events are also persisted to Postgres.
 
 ## Draft PostgreSQL schema
 
