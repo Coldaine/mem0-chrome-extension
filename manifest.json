@@ -12,7 +12,9 @@
   "host_permissions": [
     "https://api.mem0.ai/*",
     "https://app.mem0.ai/*",
-    "https://claude.ai/*"
+    "https://claude.ai/*",
+    "http://127.0.0.1:8787/*",
+    "http://localhost:8787/*"
   ],
   "action": {
     "default_popup": "src/popup.html",
@@ -34,6 +36,11 @@
     {
       "matches": ["https://chat.openai.com/*", "https://chatgpt.com/*"],
       "js": ["src/chatgpt/content.ts"]
+    },
+    {
+      "matches": ["https://chat.openai.com/*", "https://chatgpt.com/*"],
+      "js": ["src/chatgpt/capture_bridge.ts"],
+      "run_at": "document_idle"
     },
     {
       "matches": ["https://www.perplexity.ai/*"],
