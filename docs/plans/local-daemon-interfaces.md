@@ -37,6 +37,10 @@ Mem0 owns:
 
 - `POST /v1/capture/thread-snapshot`
 - `POST /v1/capture/event`
+  - Port (v1): `8787`
+  - Local endpoints targeted by extension runtime:
+    - `http://127.0.0.1:8787`
+    - `http://localhost:8787`
 
 Purpose:
 
@@ -52,6 +56,7 @@ Purpose:
 
 - return candidate context for a draft prompt
 - record final user decision and approved context payload
+- v1 suggestion matching is lexical and in-memory only
 
 ### Memory flow
 
@@ -96,6 +101,8 @@ Each event payload should include enough information to reconstruct identity and
 The daemon may enrich this with synthesized identifiers and normalized content fields before persistence.
 
 ## Archival schema responsibilities
+
+- For the Postgres implementation target, use `daemon/migrations/001_chat_capture_schema.sql` as the canonical starting DDL.
 
 The archival schema should support:
 
