@@ -64,9 +64,16 @@ let lastSnapshotFingerprint = '';
 let lastConversationId = '';
 const recentUserMessageFingerprints = new Map<string, number>();
 const capturedAssistantMessages = new Set<string>();
+let _contextButtonPending = false;
 const captureObserver = new MutationObserver(() => {
   void detectLatestAssistantMessage();
-  ensureContextButton();
+  if (!_contextButtonPending) {
+    _contextButtonPending = true;
+    requestAnimationFrame(() => {
+      _contextButtonPending = false;
+      ensureContextButton();
+    });
+  }
 });
 
 type DaemonContextSuggestion = {
@@ -551,9 +558,10 @@ function renderContextModalBody(
       return;
     }
     const contextBlock = composeContextBlock(selected);
-    setComposerText(`${contextBlock}${originalPrompt}`);
-    await confirmContextSelection(selected, contextBlock, originalPrompt);
+    const latestPrompt = getComposerText();
+    setComposerText(`${contextBlock}${latestPrompt}`);
     closeContextModal();
+    void confirmContextSelection(selected, contextBlock, latestPrompt);
   });
 
   actions.appendChild(cancelButton);
@@ -565,8 +573,12 @@ async function openContextModal(): Promise<void> {
   if (contextModalOpen || contextModalLoading) {
     return;
   }
+  if (!isConversationSurface()) {
+    return;
+  }
 
-  const prompt = normalizeText(getComposerText());
+  const rawPrompt = getComposerText();
+  const prompt = normalizeText(rawPrompt);
   if (prompt.length < 3) {
     return;
   }
@@ -576,6 +588,9 @@ async function openContextModal(): Promise<void> {
 
   const overlay = document.createElement('div');
   overlay.id = CONTEXT_MODAL_ID;
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-label', 'Context suggestions');
   overlay.style.cssText = `
     position: fixed;
     inset: 0;
@@ -615,7 +630,7 @@ async function openContextModal(): Promise<void> {
   try {
     contextSuggestions = await fetchContextSuggestions(prompt);
     contextModalLoading = false;
-    renderContextModalBody(shell, contextSuggestions, prompt);
+    renderContextModalBody(shell, contextSuggestions, rawPrompt);
   } catch {
     contextModalLoading = false;
     shell.innerHTML = '';
@@ -763,6 +778,9 @@ function attachSendCaptureListeners(): void {
         return;
       }
       if (event.key.toLowerCase() === 'm' && event.ctrlKey && event.shiftKey) {
+        if (!isConversationSurface()) {
+          return;
+        }
         event.preventDefault();
         void openContextModal();
         return;
