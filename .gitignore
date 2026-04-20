@@ -28,3 +28,8 @@ Thumbs.db
 .idea/
 *.sublime-workspace
 *.sublime-project
+
+# AI agent config
+.claude/
+.entire/
+.gemini/

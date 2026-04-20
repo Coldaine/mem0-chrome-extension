@@ -76,6 +76,7 @@ Purpose:
 Purpose:
 
 - local readiness and provider capability visibility
+- runtime can enable Postgres persistence when `ARCHIVE_DATABASE_URL` is configured
 
 ## Canonical capture payload shape
 
