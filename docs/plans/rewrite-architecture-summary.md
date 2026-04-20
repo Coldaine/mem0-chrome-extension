@@ -66,12 +66,12 @@ Browser-driving tools are a side investigation, not the primary v1 runtime path.
 
 ## What exists now in docs
 
-- [project-rename-and-boundaries.md](C:/_projects/mem0-chrome-extension/docs/plans/project-rename-and-boundaries.md)
-- [browser-driving-openapi-investigation.md](C:/_projects/mem0-chrome-extension/docs/plans/browser-driving-openapi-investigation.md)
-- [implementation-roadmap.md](C:/_projects/mem0-chrome-extension/docs/plans/implementation-roadmap.md)
-- [provider-adapter-spec.md](C:/_projects/mem0-chrome-extension/docs/plans/provider-adapter-spec.md)
-- [local-daemon-interfaces.md](C:/_projects/mem0-chrome-extension/docs/plans/local-daemon-interfaces.md)
-- [testing-strategy.md](C:/_projects/mem0-chrome-extension/docs/plans/testing-strategy.md)
+- [project-rename-and-boundaries.md](./project-rename-and-boundaries.md)
+- [browser-driving-openapi-investigation.md](./browser-driving-openapi-investigation.md)
+- [implementation-roadmap.md](./implementation-roadmap.md)
+- [provider-adapter-spec.md](./provider-adapter-spec.md)
+- [local-daemon-interfaces.md](./local-daemon-interfaces.md)
+- [testing-strategy.md](./testing-strategy.md)
 
 ## Recommended next documentation additions
 
